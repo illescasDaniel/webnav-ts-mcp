@@ -858,6 +858,20 @@ export function undefinedVarUsages(idx: RootIndex): VarUsage[] {
 }
 
 /**
+ * Declared custom properties never read by any `var()` in the root. A JS/TS
+ * string literal equal to the name (e.g. `getPropertyValue("--x")`) counts as a use.
+ */
+export function unusedVarDeclarations(idx: RootIndex): VarDeclaration[] {
+	const result: VarDeclaration[] = [];
+	for (const [name, decls] of idx.varDeclarations) {
+		if (!idx.varUsages.has(name) && !idx.stringLiterals.has(name)) {
+			result.push(...decls);
+		}
+	}
+	return result;
+}
+
+/**
  * CSS-defined tokens with no HTML/JS reference. A dynamically-built JS hit
  * elsewhere in the root counts as a reference for any token it's a prefix of;
  * so does a JS/TS string literal equal to the bare name.
@@ -875,12 +889,21 @@ export function unreferencedSelectors(idx: RootIndex): string[] {
 	return unreferenced.sort(cmp);
 }
 
-/** Index-derived warning lines for one file: undefined `var(--x)` usages (no fallback) and CSS selectors with no HTML/JS reference in this root. */
-export function diagnosticsForFile(idx: RootIndex, fileRel: string): string[] {
+/** Index-derived warning lines for one file: undefined `var(--x)` usages (no fallback), unused `--x` declarations and CSS selectors with no HTML/JS reference in this root. */
+export function diagnosticsForFile(idx: RootIndex, fileRel: string, publicPaths: readonly string[] = []): string[] {
 	const warnings: string[] = [];
 	for (const usage of undefinedVarUsages(idx)) {
 		if (usage.file === fileRel) {
 			warnings.push(`${usage.line}:1 [warning] var(${usage.name}) is never defined in ${idx.name}`);
+		}
+	}
+	// `WEBNAV_MCP_PUBLIC` files are an API for other projects: nothing in them is "unused".
+	if (isGenerated(fileRel, publicPaths)) {
+		return sortWarnings(warnings);
+	}
+	for (const decl of unusedVarDeclarations(idx)) {
+		if (decl.file === fileRel) {
+			warnings.push(`${decl.line}:1 [warning] ${decl.name} is declared but never used in ${idx.name}`);
 		}
 	}
 	for (const token of new Set(unreferencedSelectors(idx))) {
@@ -890,5 +913,9 @@ export function diagnosticsForFile(idx: RootIndex, fileRel: string): string[] {
 			}
 		}
 	}
+	return sortWarnings(warnings);
+}
+
+function sortWarnings(warnings: string[]): string[] {
 	return warnings.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 }

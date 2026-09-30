@@ -104,6 +104,12 @@ export class Webnav {
 	// still reads them, since emitted JS is where a root's runtime usages live.
 	private readonly rawExclude = process.env.WEBNAV_MCP_EXCLUDE ?? "";
 
+	// Comma-separated workspace-relative files/directories of stylesheets that
+	// are a public API (design tokens for other projects). `diagnostics` never
+	// reports their custom properties or selectors as unused.
+	private readonly rawPublic = process.env.WEBNAV_MCP_PUBLIC ?? "";
+	private publicRelative: string[] = [];
+
 	// A malformed WEBNAV_MCP_ROOTS must not crash the server at startup (the host
 	// would only show "server failed to start"): remember the problem and report
 	// it as tool text from every index-backed tool instead.
@@ -148,6 +154,13 @@ export class Webnav {
 		this.generatedRelative = this.generatedPaths
 			.filter((p) => relativeWithin(p, resolvedRoot) !== undefined)
 			.map((p) => (relativeWithin(p, resolvedRoot) as string).split(path.sep).join("/"));
+		this.publicRelative = this.rawPublic
+			.split(",")
+			.map((part) => part.trim())
+			.filter(Boolean)
+			.map((part) => relativeWithin(resolveReal(path.resolve(root, part)), resolvedRoot))
+			.filter((rel): rel is string => rel !== undefined)
+			.map((rel) => rel.split(path.sep).join("/"));
 	}
 
 	/** Stop every running language server. */
@@ -619,7 +632,7 @@ export class Webnav {
 				try {
 					const located = webIndex.rootIndexForFile(this.indexes(), this.resolvePath(filePath));
 					if (located) {
-						const extra = webIndex.diagnosticsForFile(located[0], located[1]);
+						const extra = webIndex.diagnosticsForFile(located[0], located[1], this.publicRelative);
 						if (extra.length > 0) {
 							lines.push(extra.join("\n"));
 						}

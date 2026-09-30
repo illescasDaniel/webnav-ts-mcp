@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-/** Like Python's `Path.resolve()`: absolute, symlinks resolved when the path exists. */
+/** Absolute path with symlinks resolved when the path exists. */
 export function resolveReal(p: string): string {
 	const abs = path.resolve(p);
 	try {
@@ -26,7 +26,7 @@ export function toPosix(p: string): string {
 	return p.split(path.sep).join("/");
 }
 
-/** Component-wise path ordering, matching how Python orders `Path` objects. */
+/** Component-wise path ordering. */
 export function comparePaths(a: string, b: string): number {
 	const pa = a.split(path.sep);
 	const pb = b.split(path.sep);

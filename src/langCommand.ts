@@ -1,7 +1,7 @@
 /**
  * Resolves how to launch the Node-based language servers webnav multiplexes to.
  *
- * Unlike the Python distribution, the servers are ordinary npm dependencies of
+ * The servers are ordinary npm dependencies of
  * this package, so there is nothing to download at runtime: a TypeScript 7+
  * install in the navigated project wins (it matches the project's own
  * compiler), else the copy that came with webnav. Both are launched through

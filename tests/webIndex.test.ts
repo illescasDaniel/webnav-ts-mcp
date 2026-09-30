@@ -211,6 +211,24 @@ describe("diagnostics", () => {
 		expect(wi.diagnosticsForFile(index({ "a.css": css, "a.html": '<i class="orphan"></i>' }), "a.css")).toEqual([]);
 	});
 
+	it("given a declared custom property never used, when diagnosing, then it warns; once var() or a js string uses it, it does not", () => {
+		const css = ":root { --unused: red; }\n";
+		expect(wi.diagnosticsForFile(index({ "a.css": css }), "a.css")).toEqual([
+			"1:1 [warning] --unused is declared but never used in web",
+		]);
+		expect(wi.diagnosticsForFile(index({ "a.css": `${css}a { color: var(--unused); }\n` }), "a.css")).toEqual([]);
+		expect(
+			wi.diagnosticsForFile(index({ "a.css": css, "a.js": 'el.style.getPropertyValue("--unused");\n' }), "a.css"),
+		).toEqual([]);
+	});
+
+	it("given a public stylesheet, when diagnosing, then unused declarations and orphan selectors are not reported but undefined vars are", () => {
+		const idx = index({ "tokens/a.css": ":root { --unused: red; }\n.orphan { color: var(--nope); }\n" });
+		expect(wi.diagnosticsForFile(idx, "tokens/a.css", ["tokens"])).toEqual([
+			"2:1 [warning] var(--nope) is never defined in web",
+		]);
+	});
+
 	it("given only a dynamic js hit, when finding unreferenced selectors, then a matching css rule is not flagged", () => {
 		const idx = index({ "a.css": "#view-home { margin: 0; }\n", "a.js": 'document.getElementById("view-" + id);\n' });
 		expect(wi.unreferencedSelectors(idx)).toEqual([]);

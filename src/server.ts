@@ -1,8 +1,7 @@
 /**
  * MCP surface of webnav: registers `Webnav` methods as tools.
  *
- * Tool names and parameter names (snake_case) match the Python `webnav-mcp`
- * so hosts and prompts written against either keep working. Name-ish
+ * Tool and parameter names are snake_case. Name-ish
  * parameters are all optional in the schema: a missing one is answered with a
  * short hint by the tool itself, which beats the SDK's schema-validation error
  * for agents that guess `query` vs `name`.

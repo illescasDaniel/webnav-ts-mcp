@@ -42,9 +42,7 @@
 		"check": "npm run lint && npm run typecheck && npm test",
 		"pretest": "npm run build",
 		"test": "vitest run",
-		"parity": "node scripts/parity.mjs",
 		"prepack": "npm run build",
-		"bench": "node scripts/bench.mjs",
 		"upload": "bash scripts/publish.sh",
 		"test-package": "node scripts/test_package.mjs"
 	},
