@@ -44,7 +44,9 @@
 		"test": "vitest run",
 		"parity": "node scripts/parity.mjs",
 		"prepack": "npm run build",
-		"bench": "node scripts/bench.mjs"
+		"bench": "node scripts/bench.mjs",
+		"upload": "bash scripts/publish.sh",
+		"test-package": "node scripts/test_package.mjs"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.31.0",

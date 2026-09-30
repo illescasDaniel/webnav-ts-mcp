@@ -141,6 +141,8 @@ npm install
 npm run check     # biome + tsc + vitest (pretest builds dist/)
 npm run bench     # speed/memory vs the Python package (same sibling checkout requirement)
 npm run parity    # needs the Python webnav-mcp checked out at ../webnav-mcp with `uv sync`; see the script header
+npm run upload    # check + publish to npm (--build-only / --dry-run / --otp CODE after `--`); needs `npm login`
+npm run test-package  # install the published version in a throwaway project and drive it over MCP stdio
 node bin/launch.mjs   # checkout launcher: installs + builds when needed, then starts the server
 ```
 
