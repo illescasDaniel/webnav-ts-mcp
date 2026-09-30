@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<style>
+:root { --inline-var: 1px; }
+.inline-rule { margin: var(--inline-var); }
+</style>
+</head>
+<body>
+<!-- <div id="commented-id"></div> -->
+<div id="main-panel" class="widget is-active" style="color: var(--accent)">
+	<h1 class="title">Hi</h1>
+	<button id="btn-save" class="btn">Save</button>
+	<p class='inline-rule' data-id="not-an-id">x</p>
+</div>
+<div id="view-home"></div>
+<script>
+	document.getElementById("view-home").classList.toggle("is-active");
+</script>
+</body>
+</html>

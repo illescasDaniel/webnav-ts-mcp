@@ -1,0 +1,61 @@
+{
+	"name": "webnav-ts-mcp",
+	"version": "0.1.0",
+	"description": "MCP server exposing JS/TS/HTML/CSS language-server features plus a workspace-wide CSS custom-property/selector index as MCP tools. TypeScript port of the Python webnav-mcp.",
+	"keywords": [
+		"mcp",
+		"model-context-protocol",
+		"lsp",
+		"typescript",
+		"javascript",
+		"css",
+		"html",
+		"code-navigation",
+		"ai-agents"
+	],
+	"author": "Daniel Illescas Romero <contact@daniel-ir.eu>",
+	"license": "MIT",
+	"homepage": "https://github.com/illescasDaniel/webnav-ts-mcp#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/illescasDaniel/webnav-ts-mcp.git"
+	},
+	"bugs": {
+		"url": "https://github.com/illescasDaniel/webnav-ts-mcp/issues"
+	},
+	"type": "module",
+	"bin": {
+		"webnav-ts-mcp": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"lint": "biome check .",
+		"check": "npm run lint && npm run typecheck && npm test",
+		"pretest": "npm run build",
+		"test": "vitest run",
+		"parity": "node scripts/parity.mjs",
+		"prepack": "npm run build",
+		"bench": "node scripts/bench.mjs"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.31.0",
+		"typescript": "^7.0.2",
+		"vscode-jsonrpc": "^9.0.3",
+		"vscode-langservers-extracted": "^4.10.0",
+		"zod": "^4.6.5"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@types/node": "^22.0.0",
+		"vitest": "^5.0.3"
+	}
+}

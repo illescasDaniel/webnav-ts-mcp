@@ -1,0 +1,2 @@
+# Fixtures depend on exact bytes (CRLF line endings, invalid UTF-8): never normalise them.
+tests/fixtures/** -text

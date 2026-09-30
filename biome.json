@@ -1,0 +1,17 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+	"root": true,
+	"vcs": { "enabled": false },
+	"files": { "includes": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs", "bin/**/*.mjs", "!tests/fixtures"] },
+	"formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 120 },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"style": { "useTemplate": "off", "noNonNullAssertion": "off" },
+			"suspicious": { "noExplicitAny": "error", "noTsIgnore": "error" },
+			"complexity": { "useArrowFunction": "off" }
+		}
+	},
+	"javascript": { "formatter": { "quoteStyle": "double" } }
+}

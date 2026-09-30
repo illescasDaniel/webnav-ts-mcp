@@ -1,0 +1,42 @@
+:root {
+	--accent: #06c;
+	--bg: white;
+	--row-height: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #111;
+	}
+}
+
+/* .commented-class { color: red; } */
+body {
+	background: var(--bg);
+	color: var(--fg, black);
+	border: 1px solid var(--missing);
+}
+
+.widget {
+	color: var(--accent);
+}
+
+.widget .title {
+	font-weight: bold;
+}
+
+.unused-class {
+	display: none;
+}
+
+#main-panel {
+	padding: 4px;
+}
+
+#view-home {
+	margin: 0;
+}
+
+.row-1 {
+	height: var(--row-height);
+}
