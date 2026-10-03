@@ -15,6 +15,21 @@ const POSITION_DOC =
 	"`line` and `column` are 1-indexed. `column` is a UTF-16 character offset on the line " +
 	"(not a visual/display column): a leading tab counts as one character.";
 
+const WRITE_RULE =
+	"The edit is shown to the language servers as an in-memory overlay first and the edited files and the " +
+	"files importing them are re-checked: it is written only when that adds no more errors than " +
+	"`max_new_errors` (default 0; null = no limit) and the result parses. Otherwise nothing is written and " +
+	"you get the new diagnostics plus a preview id for `apply_edit`. `apply=false` always previews. " +
+	"`undo_edit` reverts an applied edit.";
+
+const WRITES = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+const READS = { readOnlyHint: true, openWorldHint: false };
+
+const writeParams = {
+	apply: z.boolean().default(true),
+	max_new_errors: z.number().int().min(0).nullable().optional(),
+};
+
 const text = (value: string): { content: [{ type: "text"; text: string }] } => ({
 	content: [{ type: "text", text: value }],
 });
@@ -240,5 +255,254 @@ export function createServer(version: string): { server: McpServer; webnav: Webn
 		async (args) => text(await webnav.selectorLookup(args)),
 	);
 
+	registerWriteTools(server, webnav);
+
 	return { server, webnav };
+}
+
+function registerWriteTools(server: McpServer, webnav: Webnav): void {
+	server.registerTool(
+		"edit",
+		{
+			description:
+				'Edit text in a JS/TS/HTML/CSS file, type-checked: `edit(file_path="src/app.ts", old_string="x = 1", new_string="x = 2")`.\n\n' +
+				"For changes that are not a whole definition (a few lines, an import, a rule, markup) or for rewriting a " +
+				"whole file (`new_text`, which also creates a new file). To replace, add or delete a function/class/method " +
+				"by name use `edit_symbol`. `old_string` must match exactly once unless `replace_all=true` " +
+				"(line endings follow the file). `include_dependents=false` skips checking the importers. " +
+				WRITE_RULE,
+			inputSchema: {
+				file_path: z.string().optional(),
+				old_string: z.string().optional(),
+				new_string: z.string().optional(),
+				replace_all: z.boolean().default(false),
+				new_text: z.string().optional(),
+				include_dependents: z.boolean().default(true),
+				...writeParams,
+			},
+			annotations: WRITES,
+		},
+		async ({ max_new_errors, ...a }) =>
+			text(
+				await webnav.edit({
+					filePath: a.file_path,
+					oldString: a.old_string,
+					newString: a.new_string,
+					replaceAll: a.replace_all,
+					newText: a.new_text,
+					includeDependents: a.include_dependents,
+					apply: a.apply,
+					maxNewErrors: max_new_errors,
+				}),
+			),
+	);
+
+	server.registerTool(
+		"edit_symbol",
+		{
+			description:
+				"Replace, add or delete a JS/TS function, class, interface, enum, const or member by name. Examples: " +
+				'`edit_symbol(action="replace", name="Cart.total", source="total(): number { ... }")`, ' +
+				'`edit_symbol(action="insert", file_path="src/utils.ts", name="parse", source="function helper() {}")`, ' +
+				'`edit_symbol(action="delete", name="legacyParse")`.\n\n' +
+				'- `action="replace"`: `name` (dotted `Class.method` ok) and `source` (the complete new definition, ' +
+				"decorators included; re-indented to the old one's place in the file's own indent style). The doc comment " +
+				"above is kept unless `source` brings its own. A changed signature shows up as errors at call sites.\n" +
+				'- `action="insert"`: `source` and `file_path`. `position` is relative to `name`: "after" (default when ' +
+				'`name` is given) / "before" a symbol, "into" a class/interface/enum/namespace (appended to its body), or ' +
+				'"end" of the file (default without `name`; creates the file if missing). Refuses a name that already exists there.\n' +
+				'- `action="delete"`: `name` only. Refuses while anything still uses it and lists the users (`force=true` ' +
+				"deletes anyway and shows what breaks). Imports only the deleted code used are removed (`prune_imports`). " +
+				"Strings, comments and docs naming it are listed and the deletion is previewed instead of applied.\n\n" +
+				"`file_path` narrows `name` when several symbols share it. `imports` (replace/insert) is a list of " +
+				'import statements the new code needs (`["import { Money } from \\"./money\\""]`), merged into the file if missing. ' +
+				WRITE_RULE,
+			inputSchema: {
+				action: z.enum(["replace", "insert", "delete"]).optional(),
+				name: z.string().optional(),
+				source: z.string().optional(),
+				file_path: z.string().optional(),
+				position: z.enum(["after", "before", "into", "end"]).optional(),
+				imports: z.array(z.string()).optional(),
+				force: z.boolean().default(false),
+				prune_imports: z.boolean().default(true),
+				...writeParams,
+			},
+			annotations: WRITES,
+		},
+		async ({ max_new_errors, ...a }) =>
+			text(
+				await webnav.editSymbol({
+					action: a.action,
+					name: a.name,
+					source: a.source,
+					filePath: a.file_path,
+					position: a.position,
+					imports: a.imports,
+					force: a.force,
+					pruneImports: a.prune_imports,
+					apply: a.apply,
+					maxNewErrors: max_new_errors,
+				}),
+			),
+	);
+
+	server.registerTool(
+		"rename_symbol",
+		{
+			description:
+				'Rename a symbol everywhere it is used. Examples: `rename_symbol(name="Cart.total", new_name="sum")`, ' +
+				'`rename_symbol(name="--accent", new_name="--brand")`, `rename_symbol(name=".card-title", new_name="heading")`.\n\n' +
+				"JS/TS: give `name` (dotted `Class.method` ok; `file_path` narrows it) or `file_path` + `line` + `column` " +
+				"(1-indexed). Built on the TypeScript language server's rename (imports, aliases, overriding members); " +
+				'`parameter="x"` with a function\'s name renames one parameter. Places that still say the old name that ' +
+				"the type checker cannot link (strings, comments, docs, other languages) are listed.\n\n" +
+				"CSS/HTML: a `name` starting with `--`, `#` or `.` renames that custom property / id / class across " +
+				"stylesheets (declarations, `var()`, selectors), HTML (`class`, `id`, and the attributes that refer to ids: " +
+				'`for`, `aria-*`, `href="#id"`) and scripts (`getElementById`, `classList`, `querySelector`, `className`, ' +
+				'`setProperty`/`getPropertyValue`, markup inside strings). Names built dynamically (`"row-" + id`) are listed, ' +
+				"not renamed; script string literals that merely equal the name are listed and renamed only with " +
+				"`include_string_literals=true`. Refuses a new name that already exists (`force=true` merges). With several " +
+				"`WEBNAV_MCP_ROOTS` pass `file_path` to say which root. " +
+				WRITE_RULE,
+			inputSchema: {
+				new_name: z.string().optional(),
+				name: z.string().optional(),
+				file_path: z.string().optional(),
+				line: z.number().int().optional(),
+				column: z.number().int().optional(),
+				parameter: z.string().optional(),
+				force: z.boolean().default(false),
+				include_string_literals: z.boolean().default(false),
+				allow_large: z.boolean().default(false),
+				...writeParams,
+			},
+			annotations: WRITES,
+		},
+		async ({ max_new_errors, ...a }) =>
+			text(
+				await webnav.renameSymbol({
+					newName: a.new_name,
+					name: a.name,
+					filePath: a.file_path,
+					line: a.line,
+					column: a.column,
+					parameter: a.parameter,
+					force: a.force,
+					includeStringLiterals: a.include_string_literals,
+					allowLarge: a.allow_large,
+					apply: a.apply,
+					maxNewErrors: max_new_errors,
+				}),
+			),
+	);
+
+	server.registerTool(
+		"move",
+		{
+			description:
+				"Move a declaration to another file, or a whole file, and fix every reference. Examples: " +
+				'`move(name="parseDate", to_file="src/app/dates.ts")`, `move(file_path="src/old/util.ts", to_file="src/lib/util.ts")`.\n\n' +
+				"With `name`: moves that top-level function/class/interface/enum/type/const (`file_path` narrows which). " +
+				"The destination is created if missing; the code gets the imports it needs (found by the language server), " +
+				'`export` is added if it was private, every `import { name } from "old"` elsewhere is repointed, the old ' +
+				"file imports it from the new place if it still uses it (`keep_reexport=true` also leaves `export { name } " +
+				'from "new"`), and imports only the moved code used are dropped. Import cycles are warned about.\n\n' +
+				"Without `name`: `file_path` is the file to move or rename (any file; `to_file` may be a directory). Every " +
+				"import/re-export in JS/TS (the language server's own rewrite), `<script src>`/`<link href>`/`<img src>` in " +
+				"HTML (relative and root-absolute), and `url()`/`@import` in CSS follow, and the moved file's own relative " +
+				"references are re-based. Configs, path aliases and string paths are listed, not rewritten. " +
+				WRITE_RULE,
+			inputSchema: {
+				to_file: z.string().optional(),
+				name: z.string().optional(),
+				file_path: z.string().optional(),
+				keep_reexport: z.boolean().default(false),
+				allow_large: z.boolean().default(false),
+				...writeParams,
+			},
+			annotations: WRITES,
+		},
+		async ({ max_new_errors, ...a }) =>
+			text(
+				await webnav.move({
+					toFile: a.to_file,
+					name: a.name,
+					filePath: a.file_path,
+					keepReexport: a.keep_reexport,
+					allowLarge: a.allow_large,
+					apply: a.apply,
+					maxNewErrors: max_new_errors,
+				}),
+			),
+	);
+
+	server.registerTool(
+		"quick_fix",
+		{
+			description:
+				'Apply the TypeScript language server\'s own fixes to a JS/TS file: `quick_fix(file_path="src/app.ts")`.\n\n' +
+				"`action=\"fix\"` (default) fixes the file's errors one by one with the server's code actions (missing " +
+				"imports, misspelled names, ...), re-checking after each; `line` limits it to errors starting on that line. " +
+				"A fix with several candidates is listed, not guessed. The other actions are source actions on the whole " +
+				"file: `organize_imports`, `remove_unused_imports`, `sort_imports`, `fix_all`. " +
+				WRITE_RULE,
+			inputSchema: {
+				file_path: z.string().optional(),
+				line: z.number().int().optional(),
+				action: z.enum(["fix", "organize_imports", "remove_unused_imports", "sort_imports", "fix_all"]).optional(),
+				...writeParams,
+			},
+			annotations: WRITES,
+		},
+		async ({ max_new_errors, ...a }) =>
+			text(
+				await webnav.quickFix({
+					filePath: a.file_path,
+					line: a.line,
+					action: a.action,
+					apply: a.apply,
+					maxNewErrors: max_new_errors,
+				}),
+			),
+	);
+
+	server.registerTool(
+		"verify_changes",
+		{
+			description:
+				"What did the edits since a git revision break? Compares the language servers' diagnostics now against " +
+				"`since` (default `HEAD`).\n\nRun it after editing with any tool (your own Edit/Write included): the " +
+				"changed JS/TS/HTML/CSS files and the script files importing them are checked, with the committed versions " +
+				'substituted in for the "before" side. Read-only.',
+			inputSchema: { since: z.string().default("HEAD"), include_dependents: z.boolean().default(true) },
+			annotations: READS,
+		},
+		async ({ since, include_dependents }) =>
+			text(await webnav.verifyChanges({ since, includeDependents: include_dependents })),
+	);
+
+	server.registerTool(
+		"apply_edit",
+		{
+			description:
+				"Write a previewed edit (the id comes from a write tool's preview). Fails, writing nothing, if any file " +
+				"changed since the preview.",
+			inputSchema: { id: z.string().optional(), allow_large: z.boolean().default(false) },
+			annotations: WRITES,
+		},
+		async ({ id, allow_large }) => text(await webnav.applyEdit(id ?? "", allow_large)),
+	);
+
+	server.registerTool(
+		"undo_edit",
+		{
+			description:
+				"Revert an edit applied by the write tools (the latest one by default). Refuses when any of its files " +
+				"changed after the edit, so later work is never overwritten.",
+			inputSchema: { id: z.string().optional() },
+			annotations: WRITES,
+		},
+		async ({ id }) => text(await webnav.undoEdit(id)),
+	);
 }

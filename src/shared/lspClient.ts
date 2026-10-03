@@ -29,11 +29,15 @@ import { debug } from "./log.js";
 import type {
 	CallHierarchyItemLike,
 	IncomingCall,
+	LspCodeAction,
 	LspDiagnostic,
 	LspHover,
 	LspLocation,
+	LspRange,
 	LspSymbol,
+	LspWorkspaceEdit,
 } from "./lspTypes.js";
+import { canonicalPath, removeEmptyDirChain } from "./paths.js";
 import { LINE_BREAK_RE, readTextStrict } from "./text.js";
 
 /** Max ms to wait for a push-only server's publishDiagnostics after a sync. */
@@ -60,12 +64,16 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const FILE_CREATED = 1;
 const FILE_CHANGED = 2;
 const FILE_DELETED = 3;
+// `mtimeNs` of a document whose text came from `withOverlay`, never equal to a real stamp.
+const OVERLAY_STAMP = -2n;
 
 interface OpenFile {
 	uri: string;
 	version: number;
 	mtimeNs: bigint;
 	size: number;
+	/** The text the server was last sent in place of the disk's (see `withOverlay`). */
+	overlay?: string | undefined;
 }
 
 type Stamp = readonly [bigint, number];
@@ -148,6 +156,8 @@ export class LspClient {
 	private configSnapshot: Map<string, Stamp> | undefined;
 	private configHashes = new Map<string, string>();
 	private refreshChain: Promise<unknown> = Promise.resolve();
+	// uri -> text shown to the server instead of the disk's (a simulated edit, see `withOverlay`).
+	private overlays = new Map<string, string>();
 
 	constructor(options: LspClientOptions) {
 		this.workspaceRoot = options.workspaceRoot;
@@ -250,8 +260,20 @@ export class LspClient {
 							documentSymbol: { hierarchicalDocumentSymbolSupport: true },
 							callHierarchy: {},
 							typeHierarchy: {},
+							rename: { prepareSupport: true },
+							codeAction: {
+								codeActionLiteralSupport: {
+									codeActionKind: { valueSet: ["quickfix", "source", "source.organizeImports"] },
+								},
+								resolveSupport: { properties: ["edit"] },
+							},
 						},
-						workspace: { workspaceFolders: true, didChangeWatchedFiles: { dynamicRegistration: true } },
+						workspace: {
+							workspaceFolders: true,
+							didChangeWatchedFiles: { dynamicRegistration: true },
+							workspaceEdit: { documentChanges: true, resourceOperations: ["create", "rename", "delete"] },
+							fileOperations: { willRename: true },
+						},
 					},
 					workspaceFolders: [{ uri: rootUri, name: path.basename(this.workspaceRoot) }],
 				}),
@@ -302,6 +324,7 @@ export class LspClient {
 		this.openFiles = new Map();
 		this.diagEvents = new Map();
 		this.symbolCache = new Map();
+		this.overlays = new Map();
 		await this.start();
 		if (this.onRestart) {
 			await this.onRestart(this);
@@ -399,12 +422,7 @@ export class LspClient {
 	// -- document sync -------------------------------------------------------
 
 	private toPath(filePath: string): string {
-		const abs = path.isAbsolute(filePath) ? filePath : path.join(this.workspaceRoot, filePath);
-		try {
-			return fs.realpathSync(abs);
-		} catch {
-			return path.resolve(abs);
-		}
+		return canonicalPath(path.isAbsolute(filePath) ? filePath : path.join(this.workspaceRoot, filePath));
 	}
 
 	private languageIdFor(p: string): string {
@@ -414,12 +432,23 @@ export class LspClient {
 	async ensureOpen(filePath: string): Promise<string> {
 		const abs = this.toPath(filePath);
 		const uri = pathToFileURL(abs).href;
-		const stamp = statStamp(abs);
 		const known = this.openFiles.get(uri);
-		if (known && known.mtimeNs === stamp.mtimeNs && known.size === stamp.size) {
-			return uri;
+		const overlay = this.overlays.get(uri);
+		let stamp: { mtimeNs: bigint; size: number };
+		let text: string;
+		if (overlay !== undefined) {
+			if (known && known.overlay === overlay) {
+				return uri;
+			}
+			stamp = { mtimeNs: OVERLAY_STAMP, size: overlay.length };
+			text = overlay;
+		} else {
+			stamp = statStamp(abs);
+			if (known && known.overlay === undefined && known.mtimeNs === stamp.mtimeNs && known.size === stamp.size) {
+				return uri;
+			}
+			text = readTextStrict(abs);
 		}
-		const text = readTextStrict(abs);
 		this.diagEvents.set(uri, deferred());
 		// The previous version's pushed diagnostics describe text that no longer
 		// exists; keeping them would resurface fixed errors as a "cache fallback".
@@ -430,16 +459,79 @@ export class LspClient {
 			this.notify("textDocument/didOpen", {
 				textDocument: { uri, languageId: this.languageIdFor(abs), version: 1, text },
 			});
-			this.openFiles.set(uri, { uri, version: 1, ...stamp });
+			this.openFiles.set(uri, { uri, version: 1, ...stamp, overlay });
 		} else {
 			const version = known.version + 1;
 			this.notify("textDocument/didChange", {
 				textDocument: { uri, version },
 				contentChanges: [{ text }],
 			});
-			this.openFiles.set(uri, { uri, version, ...stamp });
+			this.openFiles.set(uri, { uri, version, ...stamp, overlay });
 		}
 		return uri;
+	}
+
+	/** Change the text of a file shown through `withOverlay` (only valid while one is active). */
+	updateOverlay(filePath: string, text: string): void {
+		if (this.overlays.size === 0) {
+			throw new Error("updateOverlay needs an active overlay");
+		}
+		this.overlays.set(pathToFileURL(this.toPath(filePath)).href, text);
+	}
+
+	/**
+	 * Run `body` with the language server shown `texts` (absolute path -> text) in
+	 * place of those files' disk content, files that don't exist yet included.
+	 * Nothing is written: this is how an edit is type-checked before it is
+	 * applied. Afterwards every overlaid file is resynced from the disk (or
+	 * closed when it has none), so later calls see the real project again.
+	 * One overlay at a time: callers must not nest or overlap it.
+	 */
+	async withOverlay<T>(texts: ReadonlyMap<string, string>, body: () => Promise<T>): Promise<T> {
+		if (this.overlays.size > 0) {
+			throw new Error("overlays cannot be nested");
+		}
+		const paths = [...texts.keys()].map((p) => this.toPath(p));
+		for (const [p, text] of texts) {
+			this.overlays.set(pathToFileURL(this.toPath(p)).href, text);
+		}
+		// The server finds modules through the file system, so a module that would live in a directory
+		// that doesn't exist yet needs the (empty) directory for the few moments of the check.
+		const madeDirs: { leaf: string; top: string }[] = [];
+		for (const p of paths) {
+			if (!fs.existsSync(p)) {
+				const top = fs.mkdirSync(path.dirname(p), { recursive: true });
+				if (top !== undefined) {
+					madeDirs.push({ leaf: path.dirname(p), top });
+				}
+			}
+		}
+		try {
+			// Open files that don't exist yet first: the server remembers a failed module resolution, so an
+			// importer opened before the module it imports would keep reporting it missing.
+			for (const p of [...paths].sort((a, b) => Number(fs.existsSync(a)) - Number(fs.existsSync(b)))) {
+				await this.ensureOpen(p);
+			}
+			return await body();
+		} finally {
+			this.overlays = new Map();
+			for (const p of paths) {
+				const uri = pathToFileURL(p).href;
+				if (fs.existsSync(p)) {
+					try {
+						await this.ensureOpen(p);
+					} catch (error) {
+						debug(`could not resync ${p} after an overlay`, error);
+						this.closeDocument(uri);
+					}
+				} else if (this.openFiles.has(uri)) {
+					this.closeDocument(uri);
+				}
+			}
+			for (const { leaf, top } of madeDirs) {
+				removeEmptyDirChain(leaf, top);
+			}
+		}
 	}
 
 	closeDocument(uri: string): void {
@@ -600,8 +692,8 @@ export class LspClient {
 			}
 		}
 		for (const [uri, known] of [...this.openFiles]) {
-			if (known.mtimeNs === -1n) {
-				continue; // scratch document: never on disk
+			if (known.mtimeNs === -1n || this.overlays.has(uri)) {
+				continue; // scratch or overlaid document: not what the disk says
 			}
 			const file = uriToPath(uri);
 			if (!fs.existsSync(file)) {
@@ -754,6 +846,63 @@ export class LspClient {
 
 	async incomingCalls(item: CallHierarchyItemLike): Promise<IncomingCall[]> {
 		return (await this.request<IncomingCall[] | null>("callHierarchy/incomingCalls", { item })) ?? [];
+	}
+	// -- edit-producing calls ----------------------------------------------------
+
+	/** The range `textDocument/rename` would rewrite at a position, or `null` when the symbol can't be renamed. */
+	async prepareRename(
+		filePath: string,
+		line: number,
+		column: number,
+	): Promise<{ range?: LspRange; placeholder?: string } | null> {
+		let result: LspRange | { range?: LspRange; placeholder?: string } | null;
+		try {
+			result = await this.positionRequest("textDocument/prepareRename", filePath, line, column);
+		} catch (error) {
+			if (error instanceof LspRequestError) {
+				return null;
+			}
+			throw error;
+		}
+		if (result === null || result === undefined) {
+			return null;
+		}
+		return "start" in result ? { range: result as LspRange } : (result as { range?: LspRange; placeholder?: string });
+	}
+
+	async rename(filePath: string, line: number, column: number, newName: string): Promise<LspWorkspaceEdit> {
+		return (
+			(await this.positionRequest<LspWorkspaceEdit | null>("textDocument/rename", filePath, line, column, {
+				newName,
+			})) ?? {}
+		);
+	}
+
+	/** The import rewrites the server proposes for moving files (`workspace/willRenameFiles`). */
+	async willRenameFiles(files: { oldPath: string; newPath: string }[]): Promise<LspWorkspaceEdit> {
+		const params = {
+			files: files.map((f) => ({
+				oldUri: pathToFileURL(this.toPath(f.oldPath)).href,
+				newUri: pathToFileURL(this.toPath(f.newPath)).href,
+			})),
+		};
+		return (await this.request<LspWorkspaceEdit | null>("workspace/willRenameFiles", params)) ?? {};
+	}
+
+	/** Code actions of the given kinds at a range (`diagnostics` are the ones the range overlaps). */
+	async codeActions(
+		filePath: string,
+		range: Required<LspRange>,
+		diagnostics: LspDiagnostic[],
+		only: string[],
+	): Promise<LspCodeAction[]> {
+		const uri = await this.ensureOpen(filePath);
+		const result = await this.request<(LspCodeAction | { command?: string })[] | null>("textDocument/codeAction", {
+			textDocument: { uri },
+			range,
+			context: { diagnostics, only },
+		});
+		return (result ?? []).filter((action): action is LspCodeAction => "title" in action);
 	}
 }
 

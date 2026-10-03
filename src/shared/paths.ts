@@ -39,3 +39,37 @@ export function comparePaths(a: string, b: string): number {
 	}
 	return pa.length - pb.length;
 }
+
+/**
+ * `resolveReal` for paths that may not exist yet: symlinks are resolved in the
+ * nearest existing ancestor and the missing tail is appended, so a file about
+ * to be created gets the same spelling as its siblings.
+ */
+export function canonicalPath(p: string): string {
+	const abs = path.resolve(p);
+	const tail: string[] = [];
+	for (let current = abs; ; current = path.dirname(current)) {
+		try {
+			return path.join(fs.realpathSync(current), ...tail);
+		} catch {
+			if (path.dirname(current) === current) {
+				return abs;
+			}
+			tail.unshift(path.basename(current));
+		}
+	}
+}
+
+/** `rmdir` from `leaf` up to and including `top`, stopping at the first directory that is not empty (or already gone). */
+export function removeEmptyDirChain(leaf: string, top: string): void {
+	for (let dir = leaf; ; dir = path.dirname(dir)) {
+		try {
+			fs.rmdirSync(dir);
+		} catch {
+			return;
+		}
+		if (dir === top || path.dirname(dir) === dir) {
+			return;
+		}
+	}
+}

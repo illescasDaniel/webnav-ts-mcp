@@ -45,6 +45,16 @@ import { resolveSymbol } from "./shared/resolve.js";
 import { readTextStrict, splitLines } from "./shared/text.js";
 import { type RootsProvider, WorkspaceSelector } from "./shared/workspace.js";
 import * as webIndex from "./webIndex.js";
+import { applyEdit, undoEdit } from "./write/applyTools.js";
+import type { ToolHost } from "./write/common.js";
+import { type EditArgs, edit } from "./write/editTool.js";
+import type { WriteState } from "./write/finish.js";
+import { type QuickFixArgs, quickFix } from "./write/fixTools.js";
+import { type MoveArgs, move } from "./write/moveTool.js";
+import { type RenameArgs, renameSymbol } from "./write/renameTool.js";
+import { type EditSymbolArgs, editSymbol } from "./write/symbolTools.js";
+import { EditJournal, PlanStore, readOnlyFromEnv, WriteGuard } from "./write/transaction.js";
+import { verifyChanges } from "./write/verifyTool.js";
 
 const JS_EXTENSIONS = [".js", ".mjs", ".cjs"];
 const TS_EXTENSIONS = [".ts", ".mts", ".cts"];
@@ -78,7 +88,13 @@ export const INSTRUCTIONS =
 	"css_var/selector for those instead of hover/definition/references: " +
 	"references and definition also answer from that same cross-file " +
 	"index automatically when the position is on one of those tokens in " +
-	`a .css/.html file. ${POSITION_NOTE}`;
+	"a .css/.html file. To change code, prefer the write tools over hand edits " +
+	"where one fits: edit (text), edit_symbol (replace/insert/delete a JS/TS " +
+	"definition by name), rename_symbol (JS/TS symbols and CSS --vars, #ids, " +
+	".classes), move (a declaration or a file), quick_fix. They type-check the " +
+	"edit before writing and write it when it adds no errors (max_new_errors=0; " +
+	"apply=false only previews); verify_changes shows what the working tree " +
+	`broke, undo_edit reverts. ${POSITION_NOTE}`;
 
 type ClientKey = "ts" | "html" | "css";
 
@@ -117,6 +133,11 @@ export class Webnav {
 	private webRoots: [string, string][] | undefined;
 	private generatedPaths: string[] = [];
 	private generatedRelative: string[] = [];
+
+	// What the write tools remember between calls (previews, the undo journal); a new workspace starts fresh.
+	private writeStateRef: WriteState | undefined;
+	// Overlays (simulated edits) are one at a time per language server.
+	private overlayLock: Promise<unknown> = Promise.resolve();
 
 	private clients = new Map<ClientKey, LspClient>();
 	// One lock per language server: the TS server's first start opens the whole
@@ -161,6 +182,58 @@ export class Webnav {
 			.map((part) => relativeWithin(resolveReal(path.resolve(root, part)), resolvedRoot))
 			.filter((rel): rel is string => rel !== undefined)
 			.map((rel) => rel.split(path.sep).join("/"));
+	}
+
+	// -- writing ------------------------------------------------------------------
+
+	private writeState(): WriteState {
+		const readOnly = readOnlyFromEnv();
+		let state = this.writeStateRef;
+		if (state === undefined || state.root !== this.workspaceRoot) {
+			const guard = new WriteGuard({
+				root: this.workspaceRoot,
+				readOnly,
+				isForbidden: (resolved) =>
+					this.isGenerated(resolved)
+						? "is generated output (WEBNAV_MCP_EXCLUDE); edit the source it was built from."
+						: undefined,
+			});
+			state = { root: this.workspaceRoot, guard, journal: new EditJournal(guard), plans: new PlanStore() };
+			this.writeStateRef = state;
+		} else if (state.guard.readOnly !== readOnly) {
+			state.guard.readOnly = readOnly;
+		}
+		return state;
+	}
+
+	private writeHost(): ToolHost {
+		return {
+			workspaceRoot: this.workspaceRoot,
+			state: () => this.writeState(),
+			scriptClient: () => this.getTsClient(),
+			webRoots: () =>
+				(this.webRoots ?? [[webIndex.DEFAULT_ROOT_LABEL, this.workspaceRoot] as [string, string]]).map(
+					([name, root]) => ({
+						name,
+						root,
+					}),
+				),
+			clientFor: async (filePath) => {
+				const suffix = path.extname(filePath).toLowerCase();
+				if (SCRIPT_EXTENSIONS.has(suffix)) {
+					return this.getTsClient();
+				}
+				if (suffix === ".html") {
+					return this.getHtmlClient();
+				}
+				return suffix === ".css" ? this.getCssClient() : undefined;
+			},
+			exclusive: async (body) => {
+				const run = this.overlayLock.then(body);
+				this.overlayLock = run.catch(() => {});
+				return run;
+			},
+		};
 	}
 
 	/** Stop every running language server. */
@@ -647,6 +720,38 @@ export class Webnav {
 			const combined = lines.filter((text) => text && text !== "No diagnostics.");
 			return combined.length > 0 ? combined.join("\n") : "No diagnostics.";
 		});
+	}
+
+	edit(args: EditArgs): Promise<string> {
+		return this.run(() => edit(this.writeHost(), args));
+	}
+
+	editSymbol(args: EditSymbolArgs): Promise<string> {
+		return this.run(() => editSymbol(this.writeHost(), args));
+	}
+
+	renameSymbol(args: RenameArgs): Promise<string> {
+		return this.run(() => renameSymbol(this.writeHost(), args));
+	}
+
+	quickFix(args: QuickFixArgs): Promise<string> {
+		return this.run(() => quickFix(this.writeHost(), args));
+	}
+
+	move(args: MoveArgs): Promise<string> {
+		return this.run(() => move(this.writeHost(), args));
+	}
+
+	verifyChanges(args: { since?: string | undefined; includeDependents?: boolean | undefined } = {}): Promise<string> {
+		return this.run(() => verifyChanges(this.writeHost(), args.since ?? "HEAD", args.includeDependents ?? true));
+	}
+
+	applyEdit(id: string, allowLarge = false): Promise<string> {
+		return this.run(() => applyEdit(this.writeHost(), id, allowLarge));
+	}
+
+	undoEdit(id?: string): Promise<string> {
+		return this.run(() => undoEdit(this.writeHost(), id));
 	}
 
 	cssVar(args: { name?: string | undefined; query?: string | undefined }): Promise<string> {

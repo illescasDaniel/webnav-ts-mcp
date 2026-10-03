@@ -487,7 +487,7 @@ const INDEXED_SUFFIXES = new Set([".css", ".html", ...SCRIPT_SUFFIXES]);
 // "root\0name\0base" -> (signature, index); see the module docstring.
 const rootCache = new Map<string, { signature: string; index: RootIndex }>();
 
-function relevantFiles(root: string): string[] {
+export function relevantFiles(root: string): string[] {
 	const files: string[] = [];
 	const walk = (dir: string): void => {
 		let entries: fs.Dirent[];

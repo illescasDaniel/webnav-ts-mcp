@@ -60,3 +60,29 @@ export interface IncomingCall {
 	from?: { name?: string; kind?: number; uri?: string; selectionRange?: Range };
 	fromRanges?: Range[];
 }
+
+export type LspRange = Range;
+
+export interface LspTextEdit {
+	range: { start: { line: number; character: number }; end: { line: number; character: number } };
+	newText: string;
+}
+
+/** `WorkspaceEdit`: either the `changes` map or `documentChanges` (text edits plus create/rename/delete operations). */
+export interface LspWorkspaceEdit {
+	changes?: Record<string, LspTextEdit[]>;
+	documentChanges?: (
+		| { textDocument: { uri: string }; edits: LspTextEdit[] }
+		| { kind: "create"; uri: string }
+		| { kind: "rename"; oldUri: string; newUri: string }
+		| { kind: "delete"; uri: string }
+	)[];
+}
+
+export interface LspCodeAction {
+	title: string;
+	kind?: string;
+	edit?: LspWorkspaceEdit;
+	diagnostics?: LspDiagnostic[];
+	isPreferred?: boolean;
+}
