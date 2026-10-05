@@ -61,6 +61,23 @@ afterEach(async () => {
 
 describe("edit", () => {
 	it(
+		"given a CRLF file with a stretch of LF line endings, when editing it, then the stretch as written still matches",
+		async () => {
+			const w = startProject({
+				"src/a.ts":
+					"export const a = 1;\r\nexport const b = 2;\r\nexport const e = 5;\r\nexport const c = 3;\nexport const d = 4;\n",
+			});
+			await w.edit({ filePath: "src/a.ts", oldString: "c = 3;\nexport const d", newString: "c = 30;\nexport const d" });
+			expect(read("src/a.ts")).toBe(
+				"export const a = 1;\r\nexport const b = 2;\r\nexport const e = 5;\r\nexport const c = 30;\nexport const d = 4;\n",
+			);
+			await w.edit({ filePath: "src/a.ts", oldString: "a = 1;\nexport const b", newString: "a = 10;\nexport const b" });
+			expect(read("src/a.ts")).toContain("a = 10;\r\nexport const b");
+		},
+		T,
+	);
+
+	it(
 		"given a clean replacement, when applied, then the file is written, checked, and undo restores it",
 		async () => {
 			const w = startSample();

@@ -39,6 +39,7 @@ import {
 import { LspClient } from "./shared/lspClient.js";
 import type { LspHover, LspLocation } from "./shared/lspTypes.js";
 import { NoticeBoard } from "./shared/notices.js";
+import { OverlayGate } from "./shared/overlayGate.js";
 import { resolveNameQuery } from "./shared/params.js";
 import { relativeWithin, resolveReal } from "./shared/paths.js";
 import { resolveSymbol } from "./shared/resolve.js";
@@ -136,8 +137,8 @@ export class Webnav {
 
 	// What the write tools remember between calls (previews, the undo journal); a new workspace starts fresh.
 	private writeStateRef: WriteState | undefined;
-	// Overlays (simulated edits) are one at a time per language server.
-	private overlayLock: Promise<unknown> = Promise.resolve();
+	// Simulated edits (overlays) run alone: no other tool queries a language server meanwhile.
+	private overlayGate = new OverlayGate();
 
 	private clients = new Map<ClientKey, LspClient>();
 	// One lock per language server: the TS server's first start opens the whole
@@ -228,11 +229,7 @@ export class Webnav {
 				}
 				return suffix === ".css" ? this.getCssClient() : undefined;
 			},
-			exclusive: async (body) => {
-				const run = this.overlayLock.then(body);
-				this.overlayLock = run.catch(() => {});
-				return run;
-			},
+			exclusive: (body) => this.overlayGate.exclusive(body),
 		};
 	}
 
@@ -502,18 +499,20 @@ export class Webnav {
 	}
 
 	/** Runs a tool body: picks the workspace, turns expected failures into text, appends pending notices. */
-	private async run(body: () => Promise<string>): Promise<string> {
-		let text: string;
-		try {
-			await this.useWorkspace();
-			text = await body();
-		} catch (error) {
-			if (!isToolError(error)) {
-				throw error;
+	private run(body: () => Promise<string>): Promise<string> {
+		return this.overlayGate.hold(async () => {
+			let text: string;
+			try {
+				await this.useWorkspace();
+				text = await body();
+			} catch (error) {
+				if (!isToolError(error)) {
+					throw error;
+				}
+				text = formatToolError(error);
 			}
-			text = formatToolError(error);
-		}
-		return this.notices.annotate(text);
+			return this.notices.annotate(text);
+		});
 	}
 
 	// -- tools ------------------------------------------------------------------

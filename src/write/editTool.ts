@@ -72,8 +72,13 @@ export async function edit(host: ToolHost, args: EditArgs): Promise<string> {
 		}
 		const current = readSource(file);
 		const eol = detectEol(current.text);
-		const oldString = withEol(args.oldString, eol);
-		const newString = withEol(args.newString, eol);
+		// The file's own line endings first; a snippet that only matches as written (a file with mixed endings) second.
+		const variants = [
+			{ oldString: withEol(args.oldString, eol), newString: withEol(args.newString, eol) },
+			{ oldString: args.oldString, newString: args.newString },
+		];
+		const { oldString, newString } =
+			variants.find((v) => current.text.includes(v.oldString)) ?? (variants[0] as (typeof variants)[0]);
 		if (oldString === newString) {
 			throw new ToolInputError("old_string and new_string are identical.");
 		}

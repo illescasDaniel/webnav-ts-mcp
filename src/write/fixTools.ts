@@ -13,6 +13,7 @@ import {
 	fileExists,
 	lspEditsToTextEdits,
 	modifyChange,
+	positionToOffset,
 	readSource,
 	relativeName,
 } from "./edits.js";
@@ -83,7 +84,12 @@ export async function fixFile(
 	let text = start;
 	const applied: string[] = [];
 	const unfixed = new Map<string, { diagnostic: LspDiagnostic; why: string }>();
-	const skipKey = (d: LspDiagnostic): string => `${d.code}:${d.message}:${d.range?.start?.line}`;
+	// Keyed by what the error points at, not where: earlier fixes move line numbers.
+	const skipKey = (d: LspDiagnostic): string => {
+		const from = positionToOffset(text, d.range?.start?.line ?? 0, d.range?.start?.character ?? 0);
+		const to = positionToOffset(text, d.range?.end?.line ?? 0, d.range?.end?.character ?? 0);
+		return `${d.code}:${d.message}:${text.slice(from, to)}`;
+	};
 	for (let round = 0; round < MAX_ROUNDS; round++) {
 		client.updateOverlay(file, text);
 		const diagnostics = (await client.diagnostics(file)).filter(
@@ -91,7 +97,9 @@ export async function fixFile(
 		);
 		let progressed = false;
 		for (const diagnostic of diagnostics) {
-			if (unfixed.has(skipKey(diagnostic))) {
+			const known = unfixed.get(skipKey(diagnostic));
+			if (known) {
+				known.diagnostic = diagnostic; // keep the position current
 				continue;
 			}
 			const range = {
