@@ -1,6 +1,6 @@
 {
 	"name": "webnav-ts-mcp",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "MCP server exposing JS/TS/HTML/CSS language-server features plus a workspace-wide CSS custom-property/selector index as MCP tools. TypeScript port of the Python webnav-mcp.",
 	"keywords": [
 		"mcp",
