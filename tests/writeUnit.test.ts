@@ -598,4 +598,10 @@ describe("mentions", () => {
 		execFileSync("git", ["init", "-q"], { cwd: root });
 		expect(findMentions(root, "foo").mentions.map((m) => m.file)).toEqual(["a.ts"]);
 	});
+
+	it("given a workspace inside a directory its repository ignores, when searching, then the tree is walked", () => {
+		const outer = makeTree({ ".gitignore": "ws/\n", "ws/a.ts": "foo\n" });
+		execFileSync("git", ["init", "-q"], { cwd: outer });
+		expect(findMentions(path.join(outer, "ws"), "foo").mentions.map((m) => m.file)).toEqual(["a.ts"]);
+	});
 });

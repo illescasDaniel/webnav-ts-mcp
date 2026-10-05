@@ -298,14 +298,26 @@ export function removeDeclaration(text: string, start: number, end: number): str
 }
 
 const UNUSED_CODES = new Set(["6133", "6196", "6192"]);
+// "All imports in import declaration are unused": names no binding, so the statement's own are taken.
+const ALL_IMPORTS_UNUSED = "6192";
 
-function unusedNames(items: readonly LspDiagnostic[]): Set<string> {
+/** Local names reported unused in `text` (the text the diagnostics describe). */
+function unusedNames(items: readonly LspDiagnostic[], text: string): Set<string> {
 	const names = new Set<string>();
 	for (const item of items) {
-		if (item.severity === 4 && UNUSED_CODES.has(String(item.code))) {
-			const name = /'([^']+)'/.exec(item.message ?? "")?.[1];
-			if (name) {
-				names.add(name);
+		if (item.severity !== 4 || !UNUSED_CODES.has(String(item.code))) {
+			continue;
+		}
+		const name = /'([^']+)'/.exec(item.message ?? "")?.[1];
+		if (name) {
+			names.add(name);
+		} else if (String(item.code) === ALL_IMPORTS_UNUSED && item.range?.start) {
+			const at = positionToOffset(text, item.range.start.line ?? 0, item.range.start.character ?? 0);
+			const stmt = parseImports(text).find((s) => s.kind === "import" && s.start <= at && at < s.end);
+			for (const local of [stmt?.defaultName, stmt?.namespaceName, ...(stmt?.named ?? []).map((b) => b.local)]) {
+				if (local) {
+					names.add(local);
+				}
 			}
 		}
 	}
@@ -314,7 +326,7 @@ function unusedNames(items: readonly LspDiagnostic[]): Set<string> {
 
 /** Names of the imports the language server currently reports as unused in `file` (as it sees the file right now). */
 export async function unusedImportNames(client: LspClient, file: string): Promise<Set<string>> {
-	return unusedNames(await client.diagnostics(file));
+	return unusedNames(await client.diagnostics(file), readSource(file).text);
 }
 
 /**
@@ -328,7 +340,7 @@ export async function dropNewlyDeadImports(
 	wasUnused: ReadonlySet<string>,
 ): Promise<{ text: string; removed: string[] }> {
 	client.updateOverlay(file, after);
-	const dead = [...unusedNames(await client.diagnostics(file))].filter((name) => !wasUnused.has(name));
+	const dead = [...unusedNames(await client.diagnostics(file), after)].filter((name) => !wasUnused.has(name));
 	let text = after;
 	const removed: string[] = [];
 	for (const local of dead) {

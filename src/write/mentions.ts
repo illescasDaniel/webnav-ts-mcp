@@ -63,11 +63,12 @@ function gitFiles(root: string): string[] | null {
  */
 export function mentionFiles(root: string, limit = 5000): string[] {
 	const tracked = gitFiles(root);
-	if (tracked !== null) {
+	// Empty also when `root` is a directory an enclosing repository ignores: walk it then.
+	if (tracked !== null && tracked.length > 0) {
 		return tracked
 			.filter((f) => isMentionable(f, root) && fs.existsSync(f))
-			.slice(0, limit)
-			.sort();
+			.sort()
+			.slice(0, limit);
 	}
 	const files: string[] = [];
 	const pending = [root];

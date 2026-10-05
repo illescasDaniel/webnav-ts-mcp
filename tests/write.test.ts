@@ -468,6 +468,21 @@ describe("edit_symbol", () => {
 	);
 
 	it(
+		"given an import statement whose every binding only the deleted code used, when deleting, then the statement goes",
+		async () => {
+			const w = startProject({
+				"src/util.ts": "export const a = 1;\nexport const b = 2;\n",
+				"src/main.ts":
+					'import { a, b } from "./util";\n\nexport function keep() {\n\treturn 1;\n}\n\nexport function gone() {\n\treturn a + b;\n}\n',
+			});
+			const text = await w.editSymbol({ action: "delete", name: "gone" });
+			expect(text).toContain("removed imports that only the deleted code used: a, b");
+			expect(read("src/main.ts")).toBe("export function keep() {\n\treturn 1;\n}\n");
+		},
+		T,
+	);
+
+	it(
 		"given force, when deleting a used symbol, then it is deleted and the breakage shown",
 		async () => {
 			const w = startProject({
