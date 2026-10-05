@@ -1128,3 +1128,28 @@ describe("consistency with the read tools", () => {
 		T,
 	);
 });
+
+describe("concurrent writes", () => {
+	it(
+		"queue behind each other instead of failing as stale or seeing a half-written rename",
+		async () => {
+			const w = startProject({
+				"src/a.ts": "export function one(): number {\n\treturn 1;\n}\n",
+				"src/b.ts": 'import { one } from "./a";\nexport const x = one();\n',
+			});
+			const [first, second, renamed] = await Promise.all([
+				w.editSymbol({ action: "insert", filePath: "src/a.ts", position: "end", source: "export const p = 1;" }),
+				w.editSymbol({ action: "insert", filePath: "src/a.ts", position: "end", source: "export const q = 2;" }),
+				w.renameSymbol({ name: "one", filePath: "src/a.ts", newName: "uno" }),
+			]);
+			for (const text of [first, second, renamed]) {
+				expect(text).toContain("Applied");
+				expect(text).not.toContain("changed since the preview");
+			}
+			expect(read("src/a.ts")).toContain("export const p = 1;");
+			expect(read("src/a.ts")).toContain("export const q = 2;");
+			expect(read("src/b.ts")).toContain("uno");
+		},
+		T,
+	);
+});

@@ -139,6 +139,8 @@ export class Webnav {
 	private writeStateRef: WriteState | undefined;
 	// Simulated edits (overlays) run alone: no other tool queries a language server meanwhile.
 	private overlayGate = new OverlayGate();
+	/** Tail of the chain of write-tool calls (see `runWrite`). */
+	private writeQueue: Promise<void> = Promise.resolve();
 
 	private clients = new Map<ClientKey, LspClient>();
 	// One lock per language server: the TS server's first start opens the whole
@@ -515,6 +517,22 @@ export class Webnav {
 		});
 	}
 
+	/**
+	 * Runs a write tool after every write that arrived before it has finished, so two concurrent
+	 * writes queue instead of racing (one would be rejected as "changed since the preview", or
+	 * type-check against the other's half-synced language-server view). The queue is entered
+	 * *before* the overlay gate: a write waiting in line while holding the gate would deadlock
+	 * the write that is inside its exclusive section.
+	 */
+	private runWrite(body: () => Promise<string>): Promise<string> {
+		const turn = this.writeQueue.then(() => this.run(body));
+		this.writeQueue = turn.then(
+			() => undefined,
+			() => undefined,
+		);
+		return turn;
+	}
+
 	// -- tools ------------------------------------------------------------------
 
 	hover(filePath: string, line: number, column: number): Promise<string> {
@@ -722,23 +740,23 @@ export class Webnav {
 	}
 
 	edit(args: EditArgs): Promise<string> {
-		return this.run(() => edit(this.writeHost(), args));
+		return this.runWrite(() => edit(this.writeHost(), args));
 	}
 
 	editSymbol(args: EditSymbolArgs): Promise<string> {
-		return this.run(() => editSymbol(this.writeHost(), args));
+		return this.runWrite(() => editSymbol(this.writeHost(), args));
 	}
 
 	renameSymbol(args: RenameArgs): Promise<string> {
-		return this.run(() => renameSymbol(this.writeHost(), args));
+		return this.runWrite(() => renameSymbol(this.writeHost(), args));
 	}
 
 	quickFix(args: QuickFixArgs): Promise<string> {
-		return this.run(() => quickFix(this.writeHost(), args));
+		return this.runWrite(() => quickFix(this.writeHost(), args));
 	}
 
 	move(args: MoveArgs): Promise<string> {
-		return this.run(() => move(this.writeHost(), args));
+		return this.runWrite(() => move(this.writeHost(), args));
 	}
 
 	verifyChanges(args: { since?: string | undefined; includeDependents?: boolean | undefined } = {}): Promise<string> {
@@ -746,11 +764,11 @@ export class Webnav {
 	}
 
 	applyEdit(id: string, allowLarge = false): Promise<string> {
-		return this.run(() => applyEdit(this.writeHost(), id, allowLarge));
+		return this.runWrite(() => applyEdit(this.writeHost(), id, allowLarge));
 	}
 
 	undoEdit(id?: string): Promise<string> {
-		return this.run(() => undoEdit(this.writeHost(), id));
+		return this.runWrite(() => undoEdit(this.writeHost(), id));
 	}
 
 	cssVar(args: { name?: string | undefined; query?: string | undefined }): Promise<string> {
