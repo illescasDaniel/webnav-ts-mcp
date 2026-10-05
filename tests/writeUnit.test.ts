@@ -1,5 +1,6 @@
 /** Pure parts of the write tools: edit plans, the journal, import rewriting, token finding, snippet fitting. */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -585,5 +586,16 @@ describe("mentions", () => {
 		expect(all.mentions.map((m) => `${m.file}:${m.line}`)).toEqual(["a.ts:1", "a.ts:2", "docs/readme.md:1"]);
 		const skipped = findMentions(root, "foo", (file, line) => file.endsWith("a.ts") && line === 1);
 		expect(skipped.total).toBe(2);
+	});
+
+	it("given a git work tree with ignored output and minified files, when searching, then only source is listed", () => {
+		const root = makeTree({
+			".gitignore": "site/\n",
+			"a.ts": "foo\n",
+			"site/page.html": "foo\n",
+			"static/app.min.js": "foo\n",
+		});
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		expect(findMentions(root, "foo").mentions.map((m) => m.file)).toEqual(["a.ts"]);
 	});
 });

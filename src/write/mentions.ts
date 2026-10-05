@@ -4,9 +4,10 @@
  * languages. Reported to the agent, never edited.
  */
 
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { EXCLUDED_DIR_NAMES } from "../shared/exclude.js";
+import { EXCLUDED_DIR_NAMES, isExcluded } from "../shared/exclude.js";
 import { escapeRegExp, splitLines } from "../shared/text.js";
 import { relativeName } from "./edits.js";
 
@@ -31,8 +32,43 @@ const MENTION_SUFFIXES: ReadonlySet<string> = new Set([
 	".json",
 ]);
 
-/** Text files under `root` whose suffix can mention a web symbol. */
+/** Whether `file` is worth scanning: a mentionable suffix, not minified, not under an excluded directory. */
+function isMentionable(file: string, root: string): boolean {
+	const name = path.basename(file).toLowerCase();
+	return MENTION_SUFFIXES.has(path.extname(name)) && !/\.min\.[a-z]+$/.test(name) && !isExcluded(file, root);
+}
+
+/** Tracked and untracked-but-not-ignored files under `root`, or null when `root` is not in a git work tree. */
+function gitFiles(root: string): string[] | null {
+	try {
+		const out = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+			cwd: root,
+			encoding: "utf8",
+			maxBuffer: 256 * 1024 * 1024,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return out
+			.split("\0")
+			.filter(Boolean)
+			.map((rel) => path.join(root, rel));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Text files under `root` whose suffix can mention a web symbol. In a git work tree this follows
+ * `.gitignore` (generated output such as a docs `site/` build is not source); elsewhere it walks the
+ * directory tree skipping `EXCLUDED_DIR_NAMES`. Minified files are always skipped.
+ */
 export function mentionFiles(root: string, limit = 5000): string[] {
+	const tracked = gitFiles(root);
+	if (tracked !== null) {
+		return tracked
+			.filter((f) => isMentionable(f, root) && fs.existsSync(f))
+			.slice(0, limit)
+			.sort();
+	}
 	const files: string[] = [];
 	const pending = [root];
 	for (let dir = pending.pop(); dir !== undefined && files.length < limit; dir = pending.pop()) {
@@ -51,7 +87,7 @@ export function mentionFiles(root: string, limit = 5000): string[] {
 				if (!EXCLUDED_DIR_NAMES.has(entry.name)) {
 					pending.push(full);
 				}
-			} else if (entry.isFile() && MENTION_SUFFIXES.has(path.extname(entry.name).toLowerCase())) {
+			} else if (entry.isFile() && isMentionable(full, root)) {
 				files.push(full);
 			}
 		}
